@@ -1,77 +1,152 @@
 #!/bin/bash
 
+#######################################################################################
+# improvedbackup
+#
+# Description:
+#   A reliable backup script that uses rsync. This script includes features such as 
+#   logging, directory validation and configurability.
+#
+# Usage:
+#   ./improvedbackup.sh <source_directory <target_directory>
+#
+# Requirements:
+#   - rsync
+#   - ssmtp
+#
+# Author:
+#   Filip Zvezdan Ilijevski
+#
+# Date:
+#   2024-11-01
+#######################################################################################
+
+set -euo pipefail
+IFS=$'\n\t'
+
+
 # function to timestamp log messages 
 log_message() {
     echo "$(date +"%Y-%m-%d %H:%M:%S") - $1" | tee -a "$log_dir/$log_file"
 }
 
-# function to send emails using mutt
+# function to send emails using ssmtp
 send_email() {
     local subject="$1"
     local body="$2"
-    local recipient="filipzilijevski@gmail.com"
+    local recipient="${EMAIL_RECIPIENT:-filipzilijevski@gmail.com}"
 
-    if command -v mutt > /dev/null 2>$1; then
-        echo "$body" | mutt -s "$subject" "$recipient"
+    if command -v ssmtp > /dev/null 2>&1; then
+        {
+            echo "To: $recipient"
+            echo "Subject: $subject"
+            echo
+            echo "$body"
+        } | ssmtp "$recipient" || {
+            # log error if ssmtp fails to send email
+            log_message "ERROR: Was unable to send mail via ssmtp."
+        }
+    elif command -v mail > /dev/null 2>&1; then
+        # use mail from mailutils to send email
+        echo "$body" | mail -s "$subject" "$recipient" || {
+            # log error if mail fails to send email
+            log_message "ERROR: Failed to send email via mail."        
+        }
     else
-        log_message "Warning: mutt is not installed. Unable to send email notifications."
+        # if neither ssmtp or mail is installed, log warning and continue with backup
+        log_message "WARNING: Neither ssmtp nor mail (from mailutils) is installed."
     fi
 }
 
-# check to see if the correct number of arguments is provided (2 args)
-if [ $# -ne 2 ]; then
-    echo "Usage: backupscript.sh <source_directory> <target_directory>"
-    echo "Please try again."
-    exit 1
-fi
+validate_directories() {
+    local source="$1"
+    local target="$2"
+
+    # ensure that source and target directories are not empty strings
+    if [ -z "$source" ] || [ -z "$target" ]; then
+        log_message "ERROR: Source and target directories cannot be empty"
+        send_email "Backup Script Error" "ERROR: Source and target directories cannot be empty. Please provide valid directory paths."
+        exit 1
+    fi
+
+    # check if source and target directories are the same
+    if [ "$source" -ef "$target" ]; then
+        log_message "ERROR: Source and target directories cannot be the same as this may cause data corruption."
+        send_email "Backup Script Error" "ERROR: Source and target directories cannot be the same. Please choose different directories as the source and target."
+        exit 2
+    fi
+
+    # check if source directory exists and is readable
+    if [ ! -d "$source" ] || [ ! -r "$source" ]; then
+        log_message "ERROR: The source directory '$source' does not exist or is not readable. Please check paths and permissions."
+        send_email "Backup Script Error" "ERROR: The source directory '$source' does not exist or is not readable. Please check paths and permissions."
+        exit 3
+    fi
+ 
+    # check if target directory exists and is writable
+    if [ ! -d "$target" ] || [ ! -w "$target" ]; then
+        log_message "ERROR: The target directory '$target' does not exist or is not writable. Please check paths and permissions." 
+        send_email "Backup Script Error" "ERROR: The target directory '$target' does not exist or is not writable. Please check paths and permissions." 
+        exit 4
+    fi
+}
 
 # set current date for log and backup directory names
 current_date=$(date +"%Y-%m-%d")
-log_dir="logs"
+log_dir="${LOG_DIR:-logs}"
 log_file="backup_${current_date}.log"
 
-# create the log directory if it does not exist
+# create the log directory if it does not exist and allow only owner to read, write and execute
 mkdir -p "$log_dir"
+chmod 700 "$log_dir"
 
-# check if rsync is installed
+# determine if script should do a dry run based on the DRY_RUN environment variable
+dry_run="${DRY_RUN:-false}"
+
+# configure rsync based on dry_run flag
+if [ "dry_run" = true ]; then
+    rsync_options="-avb --backup-dir=$target_dir/$current_date --delete --dry-run"
+else
+    rsync_options="-avb --backup-dir=$target_dir/$current_date --delete"
+fi
+
+# check if the correct number of arguments was provided (2 args)
+if [ $# -ne 2 ]; then
+    echo "Usage: improvedbackup.sh <source_directory> <target_directory>"
+    echo "Please try again with the correct number of arguments."
+    exit 1
+fi
+
+# assign variable names to arguments
+source_dir="$1"
+target_dir="$2"
+
 if ! command -v rsync > /dev/null 2>&1; then
-    log_message "ERROR: This script requires rsync to run properly. Please install rsync and try again."
+    log_message "ERROR: This script needs rsync to run properly. Please install rsync and try again."
     send_email "Backup Script Error" "ERROR: rsync is not installed. Please install rsync and try running the script again."
     exit 2
 fi
 
-# check if source directory exists and is readable
-if [ ! -d "$1" ] || [ ! -r "$1" ]; then
-    log_message "ERROR: The source directory '$1' does not exist or is not readable. Please check the path and permissions."
-    send_email "Backup Script Error" "ERROR: The source directory '$1' is not readable or does not exist. Please check paths and permissions." 
-    exit 3
-fi
-
-# check if target directory exists and is writable
-if [ ! -d "$2" ] || [ ! -w "$2" ]; then
-    log_message "ERROR: The target directory '$2' does not exist or is not writable. Please check the path and permissions."
-    send_email "Backup Script Error" "ERROR: The target directory '$2' is not writable or does not exist. Please check paths and permissions."
-    exit 4
-fi
-
-# rsync options for this specific script
-rsync_options="-avb --backup-dir=$2/$current_date --delete --dry-run"
+# validate source and target directories
+validate_directories "$source_dir" "$target_dir"
 
 # start the backup process
 log_message "----------------------------------------"
 log_message "Backup started."
-log_message "Source Directory: $1"
-log_message "Target Directory: $2/current"
-log_message "Backup Directory: $2/$current_date"
+log_message "Source Directory: $source_dir"
+log_message "Target Directory: $target_dir/current"
+log_message "Backup Directory: $target_dir/$current_date"
+log_message "Dry Run Mode: ${dry_run^^}"
 log_message "----------------------------------------"
 
 # execute rsync and check for errors
-if rsync $rsync_options "$1" "$2/current"; then
+if rsync $rsync_options "$source_dir" "$target_dir/current"; then
     log_message "Backup completed successfully."
     send_email "Backup Completed Succesfully" "The backup process has been completed successfully. Please check log file for more details: $log_dir/$log_file"
 else
     log_message "ERROR: Backup failed during execution."
     send_email "Backup Script Error" "ERROR: The backup process failed during execution. Please check log file for more details: $log_dir/$log_file"
+    exit 6
 fi
 
 log_message "----------------------------------------"
