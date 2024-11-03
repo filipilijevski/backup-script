@@ -27,7 +27,8 @@ IFS=$'\n\t'
 
 # function to timestamp log messages 
 log_message() {
-    echo "$(date +"%Y-%m-%d %H:%M:%S") - $1" | tee -a "$log_dir/$log_file"
+    local message="$1"
+    echo "$(date +"%Y-%m-%d %H:%M:%S") - $message" | tee -a "$log_dir/$log_file"
 }
 
 # function to send emails using ssmtp
@@ -36,7 +37,18 @@ send_email() {
     local body="$2"
     local recipient="${EMAIL_RECIPIENT:-filipzilijevski@gmail.com}"
 
-    if command -v ssmtp > /dev/null 2>&1; then
+    if command -v msmtp > /dev/null 2>&1; then
+        {
+            echo "To: $recipient"
+            echo "Subject: $subject"
+            echo
+            echo "body"
+        } | msmtp "$recipient" || {
+            log_message "ERROR: Failed to send email via msmtp."
+            exit 6
+        }
+
+    elif command -v ssmtp > /dev/null 2>&1; then
         {
             echo "To: $recipient"
             echo "Subject: $subject"
@@ -45,16 +57,21 @@ send_email() {
         } | ssmtp "$recipient" || {
             # log error if ssmtp fails to send email
             log_message "ERROR: Was unable to send mail via ssmtp."
+            exit 6
         }
+
     elif command -v mail > /dev/null 2>&1; then
         # use mail from mailutils to send email
         echo "$body" | mail -s "$subject" "$recipient" || {
             # log error if mail fails to send email
-            log_message "ERROR: Failed to send email via mail."        
+            log_message "ERROR: Failed to send email via mail."
+            exit 6        
         }
+
     else
         # if neither ssmtp or mail is installed, log warning and continue with backup
         log_message "WARNING: Neither ssmtp nor mail (from mailutils) is installed."
+        exit 7
     fi
 }
 
@@ -124,7 +141,7 @@ target_dir="$2"
 if ! command -v rsync > /dev/null 2>&1; then
     log_message "ERROR: This script needs rsync to run properly. Please install rsync and try again."
     send_email "Backup Script Error" "ERROR: rsync is not installed. Please install rsync and try running the script again."
-    exit 2
+    exit 5
 fi
 
 # validate source and target directories
@@ -146,7 +163,7 @@ if rsync $rsync_options "$source_dir" "$target_dir/current"; then
 else
     log_message "ERROR: Backup failed during execution."
     send_email "Backup Script Error" "ERROR: The backup process failed during execution. Please check log file for more details: $log_dir/$log_file"
-    exit 6
+    exit 8
 fi
 
 log_message "----------------------------------------"
