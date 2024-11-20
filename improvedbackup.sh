@@ -24,11 +24,25 @@
 set -euo pipefail
 IFS=$'\n\t'
 
+RSYNC_CMD=$(command -v rsync)
+MAIL_CMD=$(command -v mail)
+MKDIR_CMD=$(command -v mkdir)
+CHMOD_CMD=$(command -v chmod)
+TEE_CMD=$(command -v tee)
+DATE_CMD=$(command -v date)
+ECHO_CMD=$(command -v echo)
+
+for cmd in "$RSYNC_CMD" "$MAIL_CMD" "$MKDIR_CMD" "$CHMOD_CMD" "$TEE_CMD" "$DATE_CMD" "$ECHO_CMD"; do
+    if [ ! -x "$cmd" ]; then
+        echo "ERROR: Required command $(basename "$cmd") not found or not executable." >&2
+        exit 1
+    fi
+done
 
 # function to timestamp log messages 
 log_message() {
     local message="$1"
-    echo "$(date +"%Y-%m-%d %H:%M:%S") - $message" | tee -a "$log_dir/$log_file"
+    "$ECHO_CMD" "$("$DATE_CMD" +"%Y-%m-%d %H:%M:%S") - $message" | "$TEE_CMD" -a "$log_dir/$log_file"
 }
 
 # function to send emails using ssmtp
@@ -37,32 +51,9 @@ send_email() {
     local body="$2"
     local recipient="${EMAIL_RECIPIENT:-filipzilijevski@gmail.com}"
 
-    if command -v msmtp > /dev/null 2>&1; then
-        {
-            echo "To: $recipient"
-            echo "Subject: $subject"
-            echo
-            echo "body"
-        } | msmtp "$recipient" || {
-            log_message "ERROR: Failed to send email via msmtp."
-            exit 6
-        }
-
-    elif command -v ssmtp > /dev/null 2>&1; then
-        {
-            echo "To: $recipient"
-            echo "Subject: $subject"
-            echo
-            echo "$body"
-        } | ssmtp "$recipient" || {
-            # log error if ssmtp fails to send email
-            log_message "ERROR: Was unable to send mail via ssmtp."
-            exit 6
-        }
-
-    elif command -v mail > /dev/null 2>&1; then
+    if [ -x "$MAIL_CMD" ]; then
         # use mail from mailutils to send email
-        echo "$body" | mail -s "$subject" "$recipient" || {
+        echo "$body" | "$MAIL_CMD" -s "$subject" "$recipient" || {
             # log error if mail fails to send email
             log_message "ERROR: Failed to send email via mail."
             exit 6        
@@ -70,7 +61,7 @@ send_email() {
 
     else
         # if neither ssmtp or mail is installed, log warning and continue with backup
-        log_message "WARNING: Neither ssmtp nor mail (from mailutils) is installed."
+        log_message "WARNING: 'mail' (from mailutils) is not found, email notifications will not be sent."
         exit 7
     fi
 }
@@ -109,28 +100,21 @@ validate_directories() {
 }
 
 # set current date for log and backup directory names
-current_date=$(date +"%Y-%m-%d")
+current_date=$("$DATE_CMD" +"%Y-%m-%d")
 log_dir="${LOG_DIR:-logs}"
 log_file="backup_${current_date}.log"
 
 # create the log directory if it does not exist and allow only owner to read, write and execute
-mkdir -p "$log_dir"
-chmod 700 "$log_dir"
+"$MKDIR_CMD" -p "$log_dir"
+"$CHMOD_CMD" 700 "$log_dir"
 
 # determine if script should do a dry run based on the DRY_RUN environment variable
 dry_run="${DRY_RUN:-false}"
 
-# configure rsync based on dry_run flag
-if [ "dry_run" = true ]; then
-    rsync_options="-avb --backup-dir=$target_dir/$current_date --delete --dry-run"
-else
-    rsync_options="-avb --backup-dir=$target_dir/$current_date --delete"
-fi
-
 # check if the correct number of arguments was provided (2 args)
 if [ $# -ne 2 ]; then
-    echo "Usage: improvedbackup.sh <source_directory> <target_directory>"
-    echo "Please try again with the correct number of arguments."
+    "$ECHO_CMD" "Usage: improvedbackup.sh <source_directory> <target_directory>"
+    "$ECHO_CMD" "Please try again with the correct number of arguments."
     exit 1
 fi
 
@@ -138,7 +122,7 @@ fi
 source_dir="$1"
 target_dir="$2"
 
-if ! command -v rsync > /dev/null 2>&1; then
+if [ ! -x "$RSYNC_CMD" ]; then 
     log_message "ERROR: This script needs rsync to run properly. Please install rsync and try again."
     send_email "Backup Script Error" "ERROR: rsync is not installed. Please install rsync and try running the script again."
     exit 5
@@ -147,17 +131,26 @@ fi
 # validate source and target directories
 validate_directories "$source_dir" "$target_dir"
 
+# configure rsync based on dry_run flag
+if [ "$dry_run" = true ]; then
+    rsync_options="-avb --backup-dir=$target_dir/$current_date --delete --dry-run"
+    dry_run_status="ENABLED"
+else
+    rsync_options="-avb --backup-dir=$target_dir/$current_date --delete"
+    dry_run_status="DISABLED"
+fi
+
 # start the backup process
 log_message "----------------------------------------"
 log_message "Backup started."
 log_message "Source Directory: $source_dir"
 log_message "Target Directory: $target_dir/current"
 log_message "Backup Directory: $target_dir/$current_date"
-log_message "Dry Run Mode: ${dry_run^^}"
+log_message "Dry Run Mode: $dry_run_status"
 log_message "----------------------------------------"
 
 # execute rsync and check for errors
-if rsync $rsync_options "$source_dir" "$target_dir/current"; then
+if "$RSYNC_CMD" $rsync_options "$source_dir" "$target_dir/current"; then
     log_message "Backup completed successfully."
     send_email "Backup Completed Succesfully" "The backup process has been completed successfully. Please check log file for more details: $log_dir/$log_file"
 else
